@@ -147,10 +147,18 @@ ImpactFifoCmd64( mgicfifo_t *fifo, unsigned cmd, unsigned reg, unsigned val )
 }
 
 static __inline__ void
-ImpactFifoCmd32( mgicfifo_t *fifo, unsigned cmd, unsigned reg )
+ImpactFifoCmd32hi( mgicfifo_t *fifo, unsigned cmd, unsigned reg )
+{
+	fifo->w = cmd | reg<<8;
+}
+
+static __inline__ void
+ImpactFifoCmd32lo( mgicfifo_t *fifo, unsigned cmd, unsigned reg )
 {
 	(&fifo->w)[1] = cmd | reg<<8;
 }
+
+#define ImpactFifoCmd32 ImpactFifoCmd32hi
 
 #define ImpactCmdWriteRss( fifo, reg, val )\
 	ImpactFifoCmd64( fifo, 0x00180004, reg, val )
@@ -193,13 +201,11 @@ ImpactFifoCmd32( mgicfifo_t *fifo, unsigned cmd, unsigned reg )
 #define impact_cmd_hq_pg_startaddr(f,v)	ImpactFifoCmd64(f,0x00080604,0,v)
 #define impact_cmd_hq_pg_linecnt(f,v)	ImpactFifoCmd64(f,0x00080704,0,v)
 #define impact_cmd_hq_pg_widtha(f,v)	ImpactFifoCmd64(f,0x00080804,0,v)
-#if 0
+
 #define impact_cmd_hq_dmactrl_1(f)	ImpactFifoCmd32(f,0x00080b04,0)
-#define impact_cmd_hq_dmactrl_2(f)	ImpactFifoCmd64(f,0x000000b7,0,0x000e0400)
-#else
+#define impact_cmd_hq_dmactrl_2(f,p)	ImpactFifoCmd64(f,((p)<<1)|0x000000b1,0,0x000e0400)
 #define impact_cmd_hq_dmactrl_a(f,p)	ImpactFifoCmd64(f,0x00080b04,0,((p)<<1)|0x000000b1)
-#define impact_cmd_hq_dmactrl_b(f)	ImpactFifoCmd32(f,0x000e0400,0)
-#endif
+#define impact_cmd_hq_dmactrl_b(f)	ImpactFifoCmd32lo(f,0x000e0400,0)
 
 /* Now the Indexed registers of the VC2. */
 #define VC2_IREG_CONFIG    0x1f	/* this is wrong (0x20) in newport_regs.h */

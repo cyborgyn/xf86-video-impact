@@ -46,8 +46,10 @@
 
 /* Drivers using the mi SW cursor need: */
 #include "mipointer.h"
+#if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) < 6
 /* Drivers using the mi implementation of backing store need: */
 #include "mibstore.h"
+#endif
 /* Drivers using the mi colourmap code need: */
 #include "micmap.h"
 
@@ -80,7 +82,7 @@
 
 struct probed_id {
 	unsigned char id;
-	unsigned char sr;
+	unsigned char ip;
 };
 
 
@@ -89,10 +91,10 @@ static void	ImpactIdentify(int flags);
 static const OptionInfoRec * ImpactAvailableOptions(int chipid, int busid);
 static Bool ImpactProbe(DriverPtr drv, int flags);
 static Bool ImpactPreInit(ScrnInfoPtr pScrn, int flags);
-static Bool ImpactScreenInit(int Index, ScreenPtr pScreen, int argc, char **argv);
-static Bool ImpactEnterVT(int scrnIndex, int flags);
-static void ImpactLeaveVT(int scrnIndex, int flags);
-static Bool ImpactCloseScreen(int scrnIndex, ScreenPtr pScreen);
+static Bool ImpactScreenInit(ScreenPtr pScreen, int argc, char **argv);
+static Bool ImpactEnterVT(ScrnInfoPtr pScrn);
+static void ImpactLeaveVT(ScrnInfoPtr pScrn);
+static Bool ImpactCloseScreen(ScreenPtr pScreen);
 static Bool ImpactSaveScreen(ScreenPtr pScreen, int mode);
 static unsigned ImpactHWProbe(struct probed_id probedIDs[],int lim);	/* return number of found boards */
 static Bool ImpactModeInit(ScrnInfoPtr pScrn, DisplayModePtr mode);
@@ -104,7 +106,7 @@ static void ImpactUnmapShadowFB(ScrnInfoPtr pScrn);
 static Bool ImpactProbeCardInfo(ScrnInfoPtr pScrn);
 /* ------------------------------------------------------------------ */
 
-DriverRec IMPACT = {
+_X_EXPORT DriverRec IMPACT = {
 	IMPACT_VERSION,
 	IMPACT_DRIVER_NAME,
 	ImpactIdentify,
@@ -124,6 +126,19 @@ static SymTabRec ImpactChipsets[] = {
 	{ -1, NULL }
 };
 
+/* List of Symbols from other modules that this module references */
+
+static const char *fbSymbols[] = {
+	"fbPictureInit",
+	"fbScreenInit",
+	NULL
+};
+
+static const char *shadowSymbols[] = {
+	"ShadowFBInit",
+	NULL
+};
+
 #ifdef XFree86LOADER
 
 static MODULESETUPPROTO(impactSetup);
@@ -134,7 +149,7 @@ static XF86ModuleVersionInfo impactVersRec =
 	MODULEVENDORSTRING,
 	MODINFOSTRING1,
 	MODINFOSTRING2,
-	XF86_VERSION_CURRENT,
+	XORG_VERSION_CURRENT,
 	IMPACT_MAJOR_VERSION, IMPACT_MINOR_VERSION, IMPACT_PATCHLEVEL,
 	ABI_CLASS_VIDEODRV,
 	ABI_VIDEODRV_VERSION,
@@ -142,7 +157,7 @@ static XF86ModuleVersionInfo impactVersRec =
 	{0,0,0,0}
 };
 
-XF86ModuleData impactModuleData = { &impactVersRec, impactSetup, NULL };
+_X_EXPORT XF86ModuleData impactModuleData = { &impactVersRec, impactSetup, NULL };
 
 static pointer
 impactSetup(pointer module, pointer opts, int *errmaj, int *errmin)
@@ -206,6 +221,8 @@ ImpactGetRec(ScrnInfoPtr pScrn)
 static Bool
 ImpactFreeRec(ScrnInfoPtr pScrn)
 {
+	if (!pScrn->driverPrivate)
+		return TRUE;
 	free(pScrn->driverPrivate);
 	pScrn->driverPrivate = 0;
 	return TRUE;
@@ -226,7 +243,7 @@ ImpactProbe(DriverPtr drv, int flags)
 	Bool foundScreen = FALSE;
 	GDevPtr *devSections;
 	GDevPtr dev = 0;
-	resRange range[] = { {ResExcMemBlock,0,0}, _END };
+	//resRange range[] = { {ResExcMemBlock,0,0}, _END };
 	struct probed_id probedIDs[IMPACT_MAX_BOARDS];
 	memType base;
 
@@ -249,29 +266,33 @@ ImpactProbe(DriverPtr drv, int flags)
 					int entity;
 					ScrnInfoPtr pScrn = 0;
 					entity = xf86ClaimNoSlot(drv, 0, dev, TRUE);
-					if (probedIDs[j].sr) {
+					/*
+					 * Not needed anymore
+					 *
+					if (IMPACTSR_IP(probedIDs[j].ip)) {
 						base = (IMPACTSR_BASE_ADDR0 + busID * IMPACTSR_BASE_OFFSET);
-						RANGE(range[0], base,
-							base + sizeof(ImpactSRRegs), ResExcMemBlock);
+						RANGE(range[0], base, base + sizeof(ImpactSRRegs), ResExcMemBlock);
 					} else {
 						base = (IMPACTI2_BASE_ADDR0 + busID * IMPACTI2_BASE_OFFSET);
-						RANGE(range[0], base,
-							base + sizeof(ImpactI2Regs), ResExcMemBlock);
+						RANGE(range[0], base, base + sizeof(ImpactI2Regs), ResExcMemBlock);
 					}
-					pScrn = xf86AllocateScreen(drv, 0);
-					xf86AddEntityToScreen(pScrn, entity);
-					pScrn->driverVersion = IMPACT_VERSION;
-					pScrn->driverName = IMPACT_DRIVER_NAME;
-					pScrn->name = IMPACT_NAME;
-					pScrn->Probe = ImpactProbe;
-					pScrn->PreInit = ImpactPreInit;
-					pScrn->ScreenInit = ImpactScreenInit;
-					pScrn->EnterVT = ImpactEnterVT;
-					pScrn->LeaveVT = ImpactLeaveVT;
-					pScrn->driverPrivate =
-						(void*)(busID | (long)probedIDs[j].sr<<16);
-					foundScreen = TRUE;
-					break;
+					*/
+					if ((pScrn = xf86AllocateScreen(drv, 0))) {
+						xf86AddEntityToScreen(pScrn, entity);
+						/* Allocate a ScrnInfoRec */
+						pScrn->driverVersion = IMPACT_VERSION;
+						pScrn->driverName = IMPACT_DRIVER_NAME;
+						pScrn->name = IMPACT_NAME;
+						pScrn->Probe = ImpactProbe;
+						pScrn->PreInit = ImpactPreInit;
+						pScrn->ScreenInit = ImpactScreenInit;
+						pScrn->EnterVT = ImpactEnterVT;
+						pScrn->LeaveVT = ImpactLeaveVT;
+						pScrn->driverPrivate =
+							(void*)(busID | (long)probedIDs[j].ip<<16);
+						foundScreen = TRUE;
+						break;
+					}
 				}
 		}
 	}
@@ -355,10 +376,10 @@ ImpactPreInit(ScrnInfoPtr pScrn, int flags)
 	/* ...and initialize it. */
 	pImpact = IMPACTPTR(pScrn);
 	pImpact->busID = busID & 0xffff;
-	pImpact->isSR  = busID >> 16;
+	pImpact->IPnr  = busID >> 16;
 	pImpact->FlushBoxCache = 0;
 
-	if (pImpact->isSR) {
+	if (IMPACTSR(pImpact)) {
 		pImpact->WaitCfifoEmpty = &ImpactSRWaitCfifoEmpty;
 		pImpact->WaitDMAOver = &ImpactSRWaitDMAOver;
 		pImpact->WaitDMAReady = &ImpactSRWaitDMAReady;
@@ -379,7 +400,10 @@ ImpactPreInit(ScrnInfoPtr pScrn, int flags)
 		pImpact->XmapGetModeRegister = &ImpactI2XmapGetModeRegister;
 		pImpact->XmapSetModeRegister = &ImpactI2XmapSetModeRegister;
 		pImpact->RefreshArea8  = &ImpactI2RefreshArea8;
-		pImpact->RefreshArea32 = &ImpactI2RefreshArea32;
+		if (pImpact->IPnr == 22)
+			pImpact->RefreshArea32 = &ImpactIP22RefreshArea32;
+		else
+			pImpact->RefreshArea32 = &ImpactIP28RefreshArea32;
 		pImpact->base_addr0 = IMPACTI2_BASE_ADDR0;
 		pImpact->base_offset = IMPACTI2_BASE_OFFSET;
 	}
@@ -495,7 +519,7 @@ out_freerec:
 }
 
 static Bool
-ImpactScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
+ImpactScreenInit(ScreenPtr pScreen, int argc, char **argv)
 {
 	ScrnInfoPtr pScrn;
 	ImpactPtr pImpact;
@@ -504,7 +528,7 @@ ImpactScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
 	int i;
 
 	/* First get a pointer to our private info */
-	pScrn = xf86Screens[pScreen->myNum];
+	pScrn = xf86ScreenToScrn(pScreen);
 	pImpact = IMPACTPTR(pScrn);
 
 	/* map the Impactregs until the server dies */
@@ -561,7 +585,6 @@ ImpactScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
 	/* must be after RGB ordering fixed */
 	fbPictureInit (pScreen, 0, 0);
 
-	miInitializeBackingStore(pScreen);
 	xf86SetBackingStore(pScreen);
 
 	xf86SetBlackWhitePixels(pScreen);
@@ -601,6 +624,9 @@ ImpactScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
 	if (1 == serverGeneration)
 		xf86ShowUnusedOptions(pScrn->scrnIndex, pScrn->options);
 
+	if (!IMPACTSR(pImpact))
+		ImpactI2FindCflushmode(pImpact);
+
 	return TRUE;
 
 out_freerec:
@@ -610,25 +636,23 @@ out_freerec:
 
 /* called when switching away from a VT */
 static Bool
-ImpactEnterVT(int scrnIndex, int flags)
+ImpactEnterVT(ScrnInfoPtr pScrn)
 {
-	ScrnInfoPtr pScrn = xf86Screens[scrnIndex];
 	return ImpactModeInit(pScrn, pScrn->currentMode);
 }
 
 /* called when switching to a VT */
 static void
-ImpactLeaveVT(int scrnIndex, int flags)
+ImpactLeaveVT(ScrnInfoPtr pScrn)
 {
-	ScrnInfoPtr pScrn = xf86Screens[scrnIndex];
 	ImpactRestore(pScrn, FALSE);
 }
 
 /* called at the end of each server generation */
 static Bool
-ImpactCloseScreen(int scrnIndex, ScreenPtr pScreen)
+ImpactCloseScreen(ScreenPtr pScreen)
 {
-	ScrnInfoPtr pScrn = xf86Screens[scrnIndex];
+	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	ImpactPtr pImpact = IMPACTPTR(pScrn);
 
 	ImpactRestore(pScrn, TRUE);
@@ -640,7 +664,7 @@ ImpactCloseScreen(int scrnIndex, ScreenPtr pScreen)
 
 	if (pScreen->CloseScreen == ImpactCloseScreen)
 		pScreen->CloseScreen = pImpact->CloseScreen;
-	return (*pScreen->CloseScreen)(scrnIndex, pScreen);
+	return (*pScreen->CloseScreen)(pScreen);
 }
 
 /* Blank or unblank the screen */
@@ -729,7 +753,7 @@ ImpactHWProbe(struct probed_id probedIDs[], int lim)
 	FILE* fb;
 	int hasImpact = 0;
 
-	probedIDs[0].sr = probedIDs[0].id = 0;
+	probedIDs[0].ip = probedIDs[0].id = 0;
 	if (IMPACT_MAX_BOARDS < lim)
 		lim = IMPACT_MAX_BOARDS;
 	
@@ -739,9 +763,17 @@ ImpactHWProbe(struct probed_id probedIDs[], int lim)
 			char *s;
 			unsigned i = strtoul(line,&s,10);
 			if ( !strncmp(s," Impact",7) ) {
-				probedIDs[hasImpact].sr = ('S' == s[7]);
-				probedIDs[hasImpact].id = i;
-				hasImpact++;
+				switch (s[7]) {
+					case '2':
+						probedIDs[hasImpact].ip = 22 + s[8] - '2';
+						break;
+					case 'S':
+						probedIDs[hasImpact].ip = 30;
+						break;
+					default:
+						probedIDs[hasImpact].ip = 28;
+				}
+				probedIDs[hasImpact++].id = i;
 			}
 		}
 		fclose(fb);
@@ -795,13 +827,13 @@ ImpactMapRegs(ScrnInfoPtr pScrn)
 		ErrorF("ImpactMapRegs: failed to open /dev/fb%d (%s)\n",
 			pImpact->busID , strerror(errno));
 	else {
-		size_t size = pImpact->isSR ? 0x200000:sizeof(ImpactI2Regs);
+		size_t size = IMPACTSR(pImpact) ? 0x200000:sizeof(ImpactI2Regs);
 		pImpact->pImpactRegs =
 			mmap((void*)0, size, PROT_READ|PROT_WRITE,
 				MAP_SHARED, pImpact->devFD, 0);
 		if (MAP_FAILED == pImpact->pImpactRegs) {
 			ErrorF("ImpactMapRegs: Could not mmap card registers"
-				" (0x%08lx,0x%x) (%s)\n", 0, size, strerror(errno));
+				" (0x%08x,0x%lx) (%s)\n", 0, size, strerror(errno));
 			pImpact->pImpactRegs = 0;
 		}
 	}
@@ -825,7 +857,7 @@ ImpactMapShadowFB(ScrnInfoPtr pScrn)
 				MAP_SHARED, pImpact->devFD, IMPACT_FB_MMAP_OFF(3));
 		if (MAP_FAILED == pImpact->ShadowPtr) {
 			ErrorF("ImpactMapShadowFB: Could not mmap shadow buffer"
-				" (0x%08lx,0x800000) (%s)\n", IMPACT_FB_MMAP_OFF(3), strerror(errno));
+				" (0x%08x,0x800000) (%s)\n", IMPACT_FB_MMAP_OFF(3), strerror(errno));
 			pImpact->ShadowPtr = 0;
 		}
 	}
@@ -837,7 +869,7 @@ static void
 ImpactUnmapRegs(ScrnInfoPtr pScrn)
 {
 	ImpactPtr pImpact = IMPACTPTR(pScrn);
-	size_t size = pImpact->isSR ? 0x200000:sizeof(ImpactI2Regs);
+	size_t size = IMPACTSR(pImpact) ? 0x200000:sizeof(ImpactI2Regs);
 
 	if (pImpact->pImpactRegs)
 		munmap( pImpact->pImpactRegs, size );

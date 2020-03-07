@@ -16,6 +16,7 @@
 #include "xf86.h"
 #include "xf86_OSproc.h"
 #include "compiler.h"
+
 #if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) < 6
 #include "xf86Resources.h"
 #endif
@@ -23,7 +24,9 @@
 #include "xf86cmap.h"
 
 /* xaa & hardware cursor */
+#ifdef HAVE_XAA_H
 #include "xaa.h"
+#endif
 #include "xf86Cursor.h"
 
 /* register definitions of the Impact card */
@@ -50,7 +53,9 @@
 
 typedef struct {
 	unsigned busID;
-	unsigned isSR;
+	unsigned IPnr;
+#	define IMPACTSR_IP(i) ((i) > 28)
+#	define IMPACTSR(p) IMPACTSR_IP((p)->IPnr)
 	int devFD; 
 	int bitplanes; 
 	
@@ -81,8 +86,8 @@ typedef struct {
 	/* impact register handling for FullHouse/SpeedRacer: */
 	void (*WaitCfifoEmpty)(ImpactRegsPtr);
 	unsigned (*WaitCfifo)(ImpactRegsPtr);
-	unsigned (*WaitDMAOver)(ImpactRegsPtr);
-	unsigned (*WaitDMAReady)(ImpactRegsPtr);
+	void (*WaitDMAOver)(ImpactRegsPtr);
+	void (*WaitDMAReady)(ImpactRegsPtr);
 	unsigned short (*Vc3Get)(ImpactRegsPtr, CARD8);
 	void (*Vc3Set)(ImpactRegsPtr, CARD8, unsigned short);
 	CARD32 (*XmapGetModeRegister)(ImpactRegsPtr, CARD8);
@@ -139,7 +144,9 @@ void ImpactBackupPalette(ScrnInfoPtr);
 int ImpactDepth24Flags(void);
 void ImpactI2RefreshArea8(ScrnInfoPtr, int num, BoxPtr pbox);
 void ImpactSRRefreshArea8(ScrnInfoPtr, int num, BoxPtr pbox);
-void ImpactI2RefreshArea32(ScrnInfoPtr, int num, BoxPtr pbox);
+void ImpactIP28RefreshArea32(ScrnInfoPtr, int num, BoxPtr pbox);
+void ImpactIP22RefreshArea32(ScrnInfoPtr, int num, BoxPtr pbox);
 void ImpactSRRefreshArea32(ScrnInfoPtr, int num, BoxPtr pbox);
+void ImpactI2FindCflushmode(ImpactPtr);
 
 #endif /* __IMPACT_H__ */

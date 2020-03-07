@@ -168,32 +168,83 @@ ImpactSRRefreshArea8(ScrnInfoPtr pScrn, int num, BoxPtr pbox)
  * 32-bit blits are done as DMA operations, which is FAST on SGI machines
  */
 
+static void (*ImpactCflushBox)(int, char*, BoxPtr, unsigned);
+
 static void
-ImpactCflushBoxPixlines(int fd, char *base, BoxPtr box, unsigned bpitch)
+ImpactCflushLib(int fd, char *base, BoxPtr box, unsigned bpitch)
 {
-	int w = (box->x2 - box->x1) << 2;
+	int w = box->x2 - box->x1;
 	int h = box->y2 - box->y1;
 	int i;
 
 	base += bpitch*box->y1 + 4*box->x1;
 
-	/* One syscall for each pixel-line. */
-	for (i = 0; i < h; i++, base += bpitch)
-		cacheflush(base, w, DCACHE);
+	/*
+	 * This border was found to be suitable on IP28,
+	 * it may or may not fit IP26's conditions.
+	 */
+	if (w > 865 || 4*w > 5440 - 11*h && 10*w > 8180 - 14*h)
+		/* Whole enclosing mem, although may be mostly unconcerned. */
+		cacheflush(base, (h-1)*bpitch + (w << 2), DCACHE);
+	else
+		/* One syscall for each pixel-line. */
+		for (w <<= 2, i = 0; i < h; i++, base += bpitch)
+			cacheflush(base, w, DCACHE);
 }
 
 static void
-ImpactCflushBoxEnclosure(int fd, char *base, BoxPtr box, unsigned bpitch)
+ImpactCflushDrv(int fd, char *base, BoxPtr box, unsigned bpitch)
 {
-	int w = (box->x2 - box->x1) << 2;
-	int h = box->y2 - box->y1;
+	struct
+	{	struct winsize box;
+		unsigned long long base;
+		unsigned bpitch;
+	} par;
 
-	base += bpitch*box->y1 + 4*box->x1;
-
-	/* Whole enclosing mem, although may be mostly unconcerned. */
-	cacheflush(base, (h-1)*bpitch + w, DCACHE);
+	/* One cacheflush for each pixel-line by a single syscall. */
+	par.box.ws_col = box->x1;
+	par.box.ws_row = box->y1;
+	par.box.ws_xpixel = box->x2 - box->x1;
+	par.box.ws_ypixel = box->y2 - box->y1;
+	par.base = (unsigned long long) base;
+	par.bpitch = bpitch;
+	ioctl(fd, TCFLSH, &par);
 }
 
+void
+ImpactI2FindCflushmode(ImpactPtr pImpact)
+{
+	if (pImpact->IPnr != 22) {
+		struct
+		{	struct winsize box;
+			unsigned long long base;
+			unsigned bpitch;
+		} par;
+
+		par.box.ws_col = par.box.ws_row = 0;
+		par.box.ws_xpixel = par.box.ws_ypixel = 1;
+		par.base = (unsigned long long) pImpact->ShadowPtr;
+		par.bpitch = pImpact->ShadowPitch;
+		/*
+		 * Does the Impact kernel-driver provide the special cache
+		 * flush ioctl? If available, use it.
+		 */
+		if (!ioctl(pImpact->devFD, TCFLSH, &par)) {
+			ErrorF("Using kernel driver's cache-flush-ioctl.\n");
+			ImpactCflushBox = ImpactCflushDrv;
+		/*
+		 * Only the extended sys_cacheflush() would check its 3rd
+		 * parameter and return non-zero here. The "standard" version
+		 * simply assumes ICACHE, returning 0.
+		 */
+		} else if (cacheflush(pImpact->ShadowPtr, 4, -1)) {
+			ErrorF("Using cacheflush() system call from libc.\n");
+			ImpactCflushBox = ImpactCflushLib;
+		} else
+			ErrorF("No cache-flush method available, "
+				"falling back to PIO mode.\n");
+	}
+}
 
 static __inline__ int
 ImpactRefreshBoxDMA(int isSR, mgicfifo_t *cfifo, BoxPtr box, unsigned bpitch)
@@ -235,9 +286,13 @@ ImpactRefreshBoxDMA(int isSR, mgicfifo_t *cfifo, BoxPtr box, unsigned bpitch)
 	impact_cmd_hq_pg_startaddr(cfifo, bpitch*box->y1+(box->x1<<2));
 	impact_cmd_hq_pg_linecnt(cfifo, h);
 	impact_cmd_hq_pg_widtha(cfifo, w<<2);
-	impact_cmd_hq_dmactrl_a(cfifo,3);
-	impact_cmd_hq_dmactrl_b(cfifo);
-
+	if (isSR) { /* but both (should) do the same  :) */
+		impact_cmd_hq_dmactrl_1(cfifo);
+		impact_cmd_hq_dmactrl_2(cfifo,3);
+	} else {
+		impact_cmd_hq_dmactrl_a(cfifo,3);
+		impact_cmd_hq_dmactrl_b(cfifo);
+	}
 	return 1;
 }
 
@@ -257,7 +312,7 @@ ImpactRefreshArea32DMA(ImpactPtr pImpact, int num, BoxPtr pbox)
 {
 	ImpactRegsPtr pImpactRegs = pImpact->pImpactRegs;
 	mgicfifo_t *cfifo =
-		pImpact->isSR ? &pImpactRegs->sr.cfifo:&pImpactRegs->i2.cfifo;
+		IMPACTSR(pImpact) ? &pImpactRegs->sr.cfifo:&pImpactRegs->i2.cfifo;
 	unsigned bpitch = pImpact->ShadowPitch;
 
 	for (; num-- > 0; pbox++) {
@@ -273,7 +328,7 @@ ImpactRefreshArea32DMA(ImpactPtr pImpact, int num, BoxPtr pbox)
 						&sanebox, bpitch);
 
 		(*pImpact->WaitDMAOver)(pImpactRegs);
-		ImpactRefreshBoxDMA(pImpact->isSR, cfifo, &sanebox, bpitch);
+		ImpactRefreshBoxDMA(IMPACTSR(pImpact), cfifo, &sanebox, bpitch);
 		(*pImpact->WaitDMAOver)(pImpactRegs);
 		ImpactPostRefreshBoxDMA(cfifo);
 	}
@@ -290,7 +345,7 @@ ImpactRefreshArea32PIO(ImpactPtr pImpact, int num, BoxPtr pbox)
 {
 	ImpactRegsPtr pImpactRegs = pImpact->pImpactRegs;
 	mgicfifo_t *cfifo =
-		pImpact->isSR ? &pImpactRegs->sr.cfifo:&pImpactRegs->i2.cfifo;
+		IMPACTSR(pImpact) ? &pImpactRegs->sr.cfifo:&pImpactRegs->i2.cfifo;
 	unsigned bpitch = pImpact->ShadowPitch;
 
 	for (; num--; pbox++) {
@@ -323,26 +378,48 @@ ImpactRefreshArea32PIO(ImpactPtr pImpact, int num, BoxPtr pbox)
 	/* TRACE_EXIT("ImpactRefreshArea32"); */
 }
 
-
+/*
+ * IP28 and IP26 need the same DMA-refresh strategy.
+ */
 void
-ImpactI2RefreshArea32(ScrnInfoPtr pScrn, int num, BoxPtr pbox)
+ImpactIP28RefreshArea32(ScrnInfoPtr pScrn, int num, BoxPtr pbox)
 {
 	ImpactPtr pImpact = IMPACTPTR(pScrn);
+	pImpact->FlushBoxCache = ImpactCflushBox;
 
 	for (; num--; pbox++) {
 		int w = pbox->x2 - pbox->x1;
 		int h = pbox->y2 - pbox->y1;
-
-		if (w < 16 || w < 24 && h < 16 || w < 40 && h < 4)
-			ImpactRefreshArea32PIO(pImpact, 1, pbox);
-		else {
-			if (h < 580)
-				pImpact->FlushBoxCache = ImpactCflushBoxPixlines;
-			else
-				pImpact->FlushBoxCache = ImpactCflushBoxEnclosure;
-			ImpactRefreshArea32DMA(pImpact, 1, pbox);
+		int pio = !pImpact->FlushBoxCache;
+		/*
+		 * This border was found to be suitable on IP28,
+		 * it may or may not fit IP22's or IP26's conditions.
+		 */
+		if (w < 10)
+			pio = 1;
+		else if (w < 17) {
+			static char lim[] = {52,23,14,11,9,8,7};
+			if (h < lim[w-10]) pio = 1;
+		} else if (/* w < 56 && */ h < 7) {
+			static char lim[] = {0,56,34,26,21,19,17};
+			if (w < lim[h]) pio = 1;
 		}
+		if (pio)
+			ImpactRefreshArea32PIO(pImpact, 1, pbox);
+		else
+			ImpactRefreshArea32DMA(pImpact, 1, pbox);
 	}
+}
+
+/*
+ * 1) On IP22 uncached writes are available, so cache-flush is not needed.
+ * 2) Where to switch between PIO and DMA could (yet) be checked on IP28 only.
+ * So solely plain DMA is used for now.
+ */
+void
+ImpactIP22RefreshArea32(ScrnInfoPtr pScrn, int num, BoxPtr pbox)
+{
+	ImpactRefreshArea32DMA(IMPACTPTR(pScrn), num, pbox);
 }
 
 void
